@@ -8,11 +8,15 @@
 #define INIT 0
 #define RUNNING 1
 // Transmission Channel 에서 사용할 것
-#define K 1
+#define K 10
 #define NUM_RV 10000
 
 #define INPUT 0
 #define OUTPUT 1
+
+#define MEMORY 2
+#define STATE_COUNT 4
+
 
 unsigned char *decToBin(unsigned char dec[]);
 unsigned char encoder(int mode, int seed);
@@ -32,32 +36,36 @@ char ber_err[160];
     trellisDiagramBeforeToAfter[before][after] = [input, output]
     trellisDiagramAfterToBefore[after][before] = [input, output]
 */
-char trellisDiagramBeforeToAfter[4][4][2] = {
+char trellisDiagramBeforeToAfter[STATE_COUNT][STATE_COUNT][2] = {
     { {0, 0}, {-1, -1}, {1, 7}, {-1, -1} },
     { {0, 7}, {-1, -1}, {1, 0}, {-1, -1} },
     { {-1, -1}, {0, 3}, {-1, -1}, {1, 4} },
     { {-1, -1}, {0, 4} , {-1, -1}, {1, 1} }
 }; 
-char visitedBeforeToAfter[4][4] = {
+char visitedBeforeToAfter[STATE_COUNT][STATE_COUNT] = {
     {1, 0, 1, 0},
     {1, 0, 1, 0},
     {0, 1, 0, 1},
     {0, 1, 0, 1}
 };
 
-char trellisDiagramAfterToBefore[4][4][2] = {
+char trellisDiagramAfterToBefore[STATE_COUNT][STATE_COUNT][2] = {
     { {0, 0}, {0, 7}, {-1, -1}, {-1, -1} },
     { {-1, -1}, {-1, -1}, {0, 3}, {0, 4} }, 
     { {1, 7}, {1, 0}, {-1, -1}, {-1, -1} }, 
     { {-1, -1}, {-1, -1}, {1, 4}, {1, 3} }
 }; 
-char visitedAfterToBefore[4][4] = {
+char visitedAfterToBefore[STATE_COUNT][STATE_COUNT] = {
     {1, 1, 0, 0},
     {0, 0, 1, 1},
     {1, 1, 0, 0},
     {0, 0, 1, 1}
 };
-
+char activeState[MEMORY+1][STATE_COUNT] ={
+    { 1, 0, 0, 0 }, // lv0
+    { 1, 0, 1, 0 }, // lv1
+    { 1, 1, 1, 1 }, // lv2
+};
 
 int main()
 {
@@ -310,39 +318,31 @@ unsigned char binToDec(unsigned char bin[])
     return dec;
 }
 unsigned char *decoder(unsigned char dec_en[])
-{                           
+{                          
     /************    convolutional decoder, input : 20frame binary, output : 20frame decimal    ************/
-    char activeState[3][4] ={
-        { 1, 0, 0, 0 }, // lv0
-        { 1, 0, 1, 0 }, // lv1
-        { 1, 1, 1, 1 }, // lv2
-    };
+    char pathCost[STATE_COUNT] = { 0, };
+    char survivingPath[STATE_COUNT][161] = { 0, };
+    char visitedSurvivingPath[STATE_COUNT] = { 0, };
+    char decoding[160] = { 0, };
 
-    char pathCost[4] = {
-        0, 0, 0, 0
-    };
-
-    char survivingPath[4][161] = { 0, };
-    char visitedSurvivingPath[4] = { 0, };
-    char decoding[160] = {
-        0,
-    };
     unsigned char dec_frame[20][8];
     static unsigned char de_out[20];
 
+    for(char level=0; level<MEMORY; level++){
+        char tempSurvivingPath[STATE_COUNT][161] = { 0, };
+        int tempPathCost[STATE_COUNT] = { 0, };
 
-    // level0 -> level1, level1 -> level2
-    for(char level=0; level<2; level++){
-        char tempSurvivingPath[4][161] = { 0, };
-        int tempPathCost[4] = { 0, };
 
-        for(int curState=0; curState<4; curState++){
-            for(int beforeState=0; beforeState<4; beforeState++){
-                if(!activeState[1][beforeState]) continue;
+        for(int curState=0; curState<STATE_COUNT; curState++){
+            if(!activeState[level+1][curState]) continue;
+
+            for(int beforeState=0; beforeState<STATE_COUNT; beforeState++){
+                if(!activeState[level][beforeState]) continue;
                 if(!visitedAfterToBefore[curState][beforeState]) continue;
                 // 현재 상태로 오기 까지 이전 상태를 확인
                 int output = trellisDiagramAfterToBefore[curState][beforeState][OUTPUT];
                 int cost = pathCost[beforeState] + findLength(dec_en[level], output);
+
                 tempPathCost[curState] = cost;
 
                 for(int i=0; i<=level; i++){
@@ -354,25 +354,27 @@ unsigned char *decoder(unsigned char dec_en[])
             }
         }
         
-        // path 갱신
-        for(int state=0; state<4; state++){
+        for(int state=0; state<STATE_COUNT; state++){
             pathCost[state] = tempPathCost[state];
+
             for(int level=0; level<161; level++){
                 survivingPath[state][level] = tempSurvivingPath[state][level];
             }
         }
     }
 
-    // level2 -> 3 ...
-    for(int level=2; level<160; level++){
-        int tempPathCost[4] = { 0, };
-        char tempSurvivingPath[4][161] = { 0, };
+
+
+    for(int level=MEMORY; level<160; level++){
+        char tempSurvivingPath[STATE_COUNT][161] = { 0, };
+        int tempPathCost[STATE_COUNT] = { 0, };
 
         // 현재 level 에서 survivingPath 찾기
-        for(int curState=0; curState<4; curState++){
-            char visitedSurvivingPath[4] = { 0, };  
-            
-            for(int beforeState=0; beforeState<4; beforeState++){
+        for(int curState=0; curState<STATE_COUNT; curState++){
+            // if(!activeState[MEMORY][curState]) continue;
+            char visitedSurvivingPath[STATE_COUNT] = { 0, };
+
+            for(int beforeState=0; beforeState<STATE_COUNT; beforeState++){
                 if(!visitedAfterToBefore[curState][beforeState]) continue;
                 // 현재 상태로 오기 까지 이전 상태를 확인
                 int output = trellisDiagramAfterToBefore[curState][beforeState][OUTPUT];
@@ -394,7 +396,7 @@ unsigned char *decoder(unsigned char dec_en[])
         }
 
         // path 갱신
-        for(int state=0; state<4; state++){
+        for(int state=0; state<STATE_COUNT; state++){
             pathCost[state] = tempPathCost[state];
             for(int level=0; level<=160; level++){
                 survivingPath[state][level] = tempSurvivingPath[state][level]; 
@@ -406,11 +408,10 @@ unsigned char *decoder(unsigned char dec_en[])
     // surviving path 선택
     int smallestCost = pathCost[0];
     int lastState = 0;
-    for(int state=0; state<4; state++){
-        if(smallestCost > pathCost[state]){
-            smallestCost = pathCost[state];
-            lastState = state;
-        }
+    for(int state=0; state<STATE_COUNT; state++){
+        if(smallestCost <= pathCost[state]) continue;
+        smallestCost = pathCost[state];
+        lastState = state;
     }
     
     char *finalSurvivingPath = survivingPath[lastState];
@@ -445,3 +446,5 @@ unsigned char *decoder(unsigned char dec_en[])
 
     return de_out;
 }
+
+
